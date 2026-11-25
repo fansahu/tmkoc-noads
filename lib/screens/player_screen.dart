@@ -1,24 +1,18 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' hide Video;
-
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 import '../models/episode.dart';
 import '../services/episode_service.dart';
 
 class PlayerScreen extends StatefulWidget {
   final Episode episode;
   final List<Episode> episodes;
-
-  const PlayerScreen({
-    super.key,
-    required this.episode,
-    required this.episodes,
-  });
-
+  const PlayerScreen({super.key, required this.episode, this.episodes = const []});
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
@@ -28,410 +22,203 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final VideoController _controller;
   final _service = EpisodeService();
   final _yt = YoutubeExplode();
-
   late List<Episode> _episodes;
   late int _index;
   late Episode _episode;
   StreamSubscription<bool>? _completedSub;
+  StreamSubscription<Duration>? _positionSub;
+  Timer? _saveTimer;
   Timer? _upNextTimer;
   int _countdown = 5;
-
-  bool _loading = true;
+  bool _loading = true, _showControls = true, _fullscreen = false;
+  bool _showUpNext = false, _changing = false, _fill = true;
   String? _error;
-  bool _showControls = true;
-  bool _isFullscreen = false;
-  bool _fillScreen = true;
-  bool _showUpNext = false;
-  bool _changingEpisode = false;
-  double _speed = 1.0;
+  double _speed = 1, _volume = 100, _brightness = .5;
+  double _gestureStartY = 0, _gestureStartValue = 0;
+  bool _brightnessGesture = false;
+  List<StreamInfo> _qualities = [];
+  StreamInfo? _selectedQuality;
 
   @override
   void initState() {
     super.initState();
-    _episodes = [...widget.episodes]
-      ..sort((a, b) => a.number.compareTo(b.number));
-    _index = _episodes.indexWhere((e) => e.number == widget.episode.number);
-    if (_index < 0) {
-      _episodes.add(widget.episode);
-      _episodes.sort((a, b) => a.number.compareTo(b.number));
-      _index = _episodes.indexWhere((e) => e.number == widget.episode.number);
-    }
+    _episodes = [...widget.episodes]..sort((a,b)=>a.number.compareTo(b.number));
+    _index = _episodes.indexWhere((e)=>e.number==widget.episode.number);
+    if (_index < 0) { _episodes.add(widget.episode); _episodes.sort((a,b)=>a.number.compareTo(b.number)); _index=_episodes.indexWhere((e)=>e.number==widget.episode.number); }
     _episode = _episodes[_index];
-    _player = Player();
-    _controller = VideoController(_player);
-    _completedSub = _player.stream.completed.listen((completed) {
-      if (completed && mounted) _showNextCountdown();
-    });
+    _player=Player(); _controller=VideoController(_player);
+    _completedSub=_player.stream.completed.listen((v){if(v && mounted) _showNextPrompt();});
+    _positionSub=_player.stream.position.listen((p){});
+    _saveTimer=Timer.periodic(const Duration(seconds:5),(_)=>_savePosition());
+    _loadBrightness();
     _resolveAndPlay();
   }
 
-  Future<void> _resolveAndPlay() async {
-    _upNextTimer?.cancel();
-    if (mounted) {
-      setState(() {
-        _loading = true;
-        _error = null;
-        _showUpNext = false;
-        _changingEpisode = true;
-      });
-    }
-
-    final knownIds = <String>[
-      if (_episode.ytMain.isNotEmpty) _episode.ytMain,
-      ..._episode.ytBackups,
-    ];
-
-    for (final id in knownIds) {
-      final url = await _resolveStreamUrl(id);
-      if (!mounted) return;
-      if (url != null) {
-        await _open(url);
-        return;
-      }
-    }
-
-    final fallbackId = await _service.findFallbackVideoId(_episode.number);
-    if (fallbackId != null && mounted) {
-      final url = await _resolveStreamUrl(fallbackId);
-      if (url != null && mounted) {
-        await _open(url);
-        return;
-      }
-    }
-
-    if (mounted) {
-      setState(() {
-        _loading = false;
-        _changingEpisode = false;
-        _error = 'Stream nahi mila — main, backups, aur search sab fail.';
-      });
-    }
+  String get _positionKey => 'tmkoc_position_${_episode.number}';
+  Future<void> _loadBrightness() async {
+    try { _brightness=await ScreenBrightness().application; if(mounted)setState((){}); } catch (_) {}
   }
-
-  Future<String?> _resolveStreamUrl(String videoId) async {
+  Future<void> _savePosition() async {
+    if (_changing) return;
+    try { final prefs=await SharedPreferences.getInstance(); await prefs.setInt(_positionKey,_player.state.position.inMilliseconds); } catch (_) {}
+  }
+  Future<String?> _resolve(String id) async {
     try {
-      final manifest = await _yt.videos.streamsClient.getManifest(videoId);
-      final muxed = manifest.muxed;
-      if (muxed.isNotEmpty) {
+      final m=await _yt.videos.streamsClient.getManifest(id);
+      final muxed=m.muxed;
+      if(muxed.isNotEmpty) {
+        _qualities=muxed.toList()..sort((a,b)=>a.bitrate.compareTo(b.bitrate));
         return muxed.withHighestBitrate().url.toString();
-      }
-      final videoOnly = manifest.videoOnly;
-      if (videoOnly.isNotEmpty) {
-        return videoOnly.withHighestBitrate().url.toString();
       }
     } catch (_) {}
     return null;
   }
-
-  Future<void> _open(String url) async {
-    await _player.open(Media(url));
-    await _player.setRate(_speed);
-    if (mounted) {
-      setState(() {
-        _loading = false;
-        _changingEpisode = false;
-      });
+  Future<void> _resolveAndPlay() async {
+    _upNextTimer?.cancel();
+    if(mounted)setState(()=>{_loading=true,_error=null,_changing=true,_showUpNext=false});
+    // Stop the old source immediately to prevent old audio leaking into next episode.
+    try { await _player.pause(); await _player.stop(); } catch (_) {}
+    String? url;
+    final ids=[if(_episode.ytMain.isNotEmpty)_episode.ytMain,..._episode.ytBackups];
+    for(final id in ids){ url=await _resolve(id); if(url!=null)break; }
+    if(url==null){final id=await _service.findFallbackVideoId(_episode.number); if(id!=null)url=await _resolve(id);}
+    if(!mounted)return;
+    if(url==null){setState(()=>{_loading=false,_changing=false,_error='Stream nahi mila.'});return;}
+    try {
+      await _player.open(Media(url), play:false);
+      await _player.setRate(_speed);
+      await _player.setVolume(_volume);
+      final prefs=await SharedPreferences.getInstance();
+      final saved=prefs.getInt(_positionKey)??0;
+      final duration=_player.state.duration;
+      if(saved>0 && (duration==Duration.zero || saved<duration.inMilliseconds-3000)) {
+        await _player.seek(Duration(milliseconds:saved));
+      }
+      await _player.play();
+      if(mounted)setState(()=>{_loading=false,_changing=false});
+    } catch(e) {
+      if(mounted)setState(()=>{_loading=false,_changing=false,_error='Playback error: $e'});
     }
   }
-
-  void _showNextCountdown() {
-    if (_showUpNext || _changingEpisode || _index >= _episodes.length - 1) return;
-    _upNextTimer?.cancel();
-    setState(() {
-      _showUpNext = true;
-      _countdown = 5;
-    });
-    _upNextTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (_countdown <= 1) {
-        timer.cancel();
-        _playNext();
-      } else {
-        setState(() => _countdown--);
-      }
+  void _showNextPrompt(){
+    if(_showUpNext||_changing||_index>=_episodes.length-1)return;
+    setState(()=>{_showUpNext=true,_countdown=5});
+    _upNextTimer=Timer.periodic(const Duration(seconds:1),(t){
+      if(!mounted){t.cancel();return;}
+      if(_countdown<=1){t.cancel();_next();}else{setState(()=>_countdown--);}
     });
   }
-
-  void _cancelUpNext() {
+  Future<void> _next() async {
+    if(_index>=_episodes.length-1||_changing)return;
     _upNextTimer?.cancel();
-    setState(() => _showUpNext = false);
-  }
-
-  Future<void> _playNext() async {
-    if (_index >= _episodes.length - 1 || _changingEpisode) return;
-    _upNextTimer?.cancel();
-    setState(() {
-      _index++;
-      _episode = _episodes[_index];
-      _showUpNext = false;
-    });
+    await _savePosition();
+    setState(()=>{_index++,_episode=_episodes[_index],_showUpNext=false});
     await _resolveAndPlay();
   }
-
-  Future<void> _playPrevious() async {
-    if (_index <= 0 || _changingEpisode) return;
+  Future<void> _previous() async {
+    if(_index<=0||_changing)return;
     _upNextTimer?.cancel();
-    setState(() {
-      _index--;
-      _episode = _episodes[_index];
-      _showUpNext = false;
-    });
+    await _savePosition();
+    setState(()=>{_index--,_episode=_episodes[_index],_showUpNext=false});
     await _resolveAndPlay();
   }
-
   Future<void> _toggleFullscreen() async {
-    if (_isFullscreen) {
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-      ]);
-    } else {
+    if(!_fullscreen){
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft,DeviceOrientation.landscapeRight]);
+    }else{
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp,DeviceOrientation.portraitDown]);
     }
-    if (mounted) setState(() => _isFullscreen = !_isFullscreen);
+    if(mounted)setState(()=>_fullscreen=!_fullscreen);
   }
-
-  Future<void> _leaveFullscreen() async {
-    if (!_isFullscreen) return;
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-    ]);
-    if (mounted) setState(() => _isFullscreen = false);
+  Future<void> _brightnessTo(double v) async {
+    _brightness=v.clamp(.02,1);
+    try { await ScreenBrightness().setApplicationScreenBrightness(_brightness); } catch (_) {}
+    if(mounted)setState((){});
   }
-
+  void _onVerticalStart(DragStartDetails d, Size size) {
+    _brightnessGesture=d.localPosition.dx<size.width/2;
+    _gestureStartY=d.globalPosition.dy;
+    _gestureStartValue=_brightnessGesture?_brightness:_volume;
+  }
+  void _onVerticalUpdate(DragUpdateDetails d) {
+    final delta=(_gestureStartY-d.globalPosition.dy)/260;
+    final value=(_gestureStartValue+delta).clamp(0.0,1.0);
+    if(_brightnessGesture){_brightnessTo(value);}else{_volume=value*100;_player.setVolume(_volume);if(mounted)setState((){});}
+  }
   @override
-  void dispose() {
-    _upNextTimer?.cancel();
-    _completedSub?.cancel();
+  void dispose(){
+    _savePosition(); _saveTimer?.cancel(); _upNextTimer?.cancel();
+    _completedSub?.cancel(); _positionSub?.cancel();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-    _player.dispose();
-    _service.dispose();
-    _yt.close();
+    _player.dispose(); _service.dispose(); _yt.close();
     super.dispose();
   }
-
   @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: !_isFullscreen,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _isFullscreen) _leaveFullscreen();
-      },
-      child: Scaffold(
-        appBar: _isFullscreen
-            ? null
-            : AppBar(title: Text('Ep ${_episode.number} — ${_episode.title}')),
-        backgroundColor: Colors.black,
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _error != null
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(_error!,
-                          style: const TextStyle(color: Colors.white),
-                          textAlign: TextAlign.center),
-                    ),
-                  )
-                : _buildPlayer(),
-      ),
-    );
-  }
-
-  Widget _buildPlayer() {
-    return GestureDetector(
-      onDoubleTap: () {
-        if (_player.state.playing) {
-          _player.pause();
-        } else {
-          _player.play();
-        }
-      },
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Video(
-            controller: _controller,
-            controls: NoVideoControls,
-            fit: _fillScreen ? BoxFit.cover : BoxFit.contain,
-          ),
-          if (_showControls)
-            Positioned(
-              left: 12,
-              top: 8,
-              right: 12,
-              child: Text(
-                'Episode ${_episode.number} · ${_episode.title}',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  shadows: [Shadow(blurRadius: 6, color: Colors.black)],
-                ),
-              ),
-            ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _buildControlBar(),
-          ),
-          if (_showUpNext) _buildUpNextOverlay(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildUpNextOverlay() {
-    final next = _episodes[_index + 1];
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        margin: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.88),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Up Next', style: TextStyle(color: Colors.white, fontSize: 20)),
-            const SizedBox(height: 8),
-            Text('Episode ${next.number} · ${next.title}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 8),
-            Text('$_countdown seconds',
-                style: const TextStyle(color: Colors.white)),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextButton(onPressed: _cancelUpNext, child: const Text('Cancel')),
-                const SizedBox(width: 8),
-                FilledButton(onPressed: _playNext, child: const Text('Play now')),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildControlBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.bottomCenter,
-          end: Alignment.topCenter,
-          colors: [Colors.black87, Colors.transparent],
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          StreamBuilder<Duration>(
-            stream: _player.stream.position,
-            builder: (context, posSnap) {
-              return StreamBuilder<Duration>(
-                stream: _player.stream.duration,
-                builder: (context, durSnap) {
-                  final pos = posSnap.data ?? Duration.zero;
-                  final dur = durSnap.data ?? Duration.zero;
-                  final max = dur.inMilliseconds.toDouble();
-                  return Slider(
-                    value: max <= 0
-                        ? 0
-                        : pos.inMilliseconds.clamp(0, dur.inMilliseconds).toDouble(),
-                    max: max <= 0 ? 1 : max,
-                    onChanged: max <= 0
-                        ? null
-                        : (v) => _player.seek(Duration(milliseconds: v.toInt())),
-                  );
-                },
-              );
-            },
-          ),
-          Row(
-            children: [
-              IconButton(
-                tooltip: 'Previous episode',
-                icon: const Icon(Icons.skip_previous, color: Colors.white),
-                onPressed: _index > 0 && !_changingEpisode ? _playPrevious : null,
-              ),
-              IconButton(
-                icon: Icon(_player.state.playing ? Icons.pause : Icons.play_arrow,
-                    color: Colors.white),
-                onPressed: () {
-                  if (_player.state.playing) {
-                    _player.pause();
-                  } else {
-                    _player.play();
-                  }
-                  setState(() {});
-                },
-              ),
-              IconButton(
-                tooltip: 'Next episode',
-                icon: const Icon(Icons.skip_next, color: Colors.white),
-                onPressed: _index < _episodes.length - 1 && !_changingEpisode
-                    ? _playNext
-                    : null,
-              ),
-              IconButton(
-                icon: const Icon(Icons.replay_10, color: Colors.white),
-                onPressed: () => _player.seek(
-                    _player.state.position - const Duration(seconds: 10)),
-              ),
-              IconButton(
-                icon: const Icon(Icons.forward_10, color: Colors.white),
-                onPressed: () => _player.seek(
-                    _player.state.position + const Duration(seconds: 10)),
-              ),
-              const Spacer(),
-              TextButton(
-                onPressed: () {
-                  const speeds = [0.75, 1.0, 1.25, 1.5, 2.0];
-                  final idx = speeds.indexOf(_speed);
-                  _speed = speeds[(idx + 1) % speeds.length];
-                  _player.setRate(_speed);
-                  setState(() {});
-                },
-                child: Text('${_speed.toStringAsFixed(2)}x',
-                    style: const TextStyle(color: Colors.white)),
-              ),
-              IconButton(
-                tooltip: _fillScreen ? 'Fit video' : 'Fill screen',
-                icon: Icon(
-                  _fillScreen ? Icons.fit_screen : Icons.crop_free,
-                  color: Colors.white,
-                ),
-                onPressed: () => setState(() => _fillScreen = !_fillScreen),
-              ),
-              IconButton(
-                tooltip: 'Fullscreen',
-                icon: Icon(
-                  _isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
-                  color: Colors.white,
-                ),
-                onPressed: _toggleFullscreen,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context)=>PopScope(
+    canPop:!_fullscreen,
+    onPopInvokedWithResult:(didPop,result){if(!didPop&&_fullscreen)_toggleFullscreen();},
+    child:Scaffold(
+      backgroundColor:Colors.black,
+      appBar:_fullscreen?null:AppBar(title:Text('Ep ${_episode.number} — ${_episode.title}')),
+      body:_loading?const Center(child:CircularProgressIndicator()):
+        _error!=null?Center(child:Text(_error!,style:const TextStyle(color:Colors.white))):_buildVideo(),
+    ),
+  );
+  Widget _buildVideo()=>LayoutBuilder(builder:(context,c)=>GestureDetector(
+    onTap:()=>setState(()=>_showControls=!_showControls),
+    onDoubleTap:(){_player.state.playing?_player.pause():_player.play();},
+    onVerticalDragStart:(d)=>_onVerticalStart(d,c.biggest),
+    onVerticalDragUpdate:_onVerticalUpdate,
+    child:Stack(fit:StackFit.expand,children:[
+      Video(controller:_controller,controls:NoVideoControls,fit:_fill?BoxFit.cover:BoxFit.contain),
+      if(_showControls) ...[
+        Positioned(top:10,left:12,right:12,child:Text('Episode ${_episode.number} · ${_episode.title}',style:const TextStyle(color:Colors.white,shadows:[Shadow(blurRadius:5,color:Colors.black)]))),
+        Positioned(bottom:0,left:0,right:0,child:_controls()),
+      ],
+      if(_showUpNext&&_index<_episodes.length-1)Center(child:Container(
+        padding:const EdgeInsets.all(18),decoration:BoxDecoration(color:Colors.black87,borderRadius:BorderRadius.circular(14)),
+        child:Column(mainAxisSize:MainAxisSize.min,children:[
+          const Text('Up Next',style:TextStyle(color:Colors.white,fontSize:20)),
+          Text('Episode ${_episodes[_index+1].number}',style:const TextStyle(color:Colors.white)),
+          Text('$_countdown seconds',style:const TextStyle(color:Colors.white)),
+          Row(mainAxisSize:MainAxisSize.min,children:[
+            TextButton(onPressed:(){_upNextTimer?.cancel();setState(()=>_showUpNext=false);},child:const Text('Cancel')),
+            FilledButton(onPressed:_next,child:const Text('Play now')),
+          ])
+        ]),
+      )),
+    ]),
+  ));
+  Widget _controls()=>Container(
+    padding:const EdgeInsets.fromLTRB(10,18,10,8),
+    decoration:const BoxDecoration(gradient:LinearGradient(begin:Alignment.bottomCenter,end:Alignment.topCenter,colors:[Colors.black87,Colors.transparent])),
+    child:Column(mainAxisSize:MainAxisSize.min,children:[
+      StreamBuilder<Duration>(stream:_player.stream.position,builder:(c,p)=>StreamBuilder<Duration>(
+        stream:_player.stream.duration,builder:(c,d){
+          final pos=p.data??Duration.zero, dur=d.data??Duration.zero;
+          return Slider(value:dur.inMilliseconds<=0?0:pos.inMilliseconds.clamp(0,dur.inMilliseconds).toDouble(),max:dur.inMilliseconds<=0?1:dur.inMilliseconds.toDouble(),onChanged:dur.inMilliseconds<=0?null:(v)=>_player.seek(Duration(milliseconds:v.toInt())));
+        })),
+      Row(children:[
+        IconButton(onPressed:_index>0?_previous:null,icon:const Icon(Icons.skip_previous,color:Colors.white)),
+        IconButton(onPressed:(){_player.state.playing?_player.pause():_player.play();setState((){});},icon:Icon(_player.state.playing?Icons.pause:Icons.play_arrow,color:Colors.white)),
+        IconButton(onPressed:_index<_episodes.length-1?_next:null,icon:const Icon(Icons.skip_next,color:Colors.white)),
+        IconButton(onPressed:()=>_player.seek(_player.state.position-const Duration(seconds:10)),icon:const Icon(Icons.replay_10,color:Colors.white)),
+        IconButton(onPressed:()=>_player.seek(_player.state.position+const Duration(seconds:10)),icon:const Icon(Icons.forward_10,color:Colors.white)),
+        const Spacer(),
+        PopupMenuButton<StreamInfo>(tooltip:'Quality',icon:const Icon(Icons.hd,color:Colors.white),onSelected:(q)async{
+          final pos=_player.state.position; final wasPlaying=_player.state.playing;
+          setState(()=>_selectedQuality=q);
+          // Re-open chosen muxed stream and restore position.
+          await _player.pause(); await _player.stop(); await _player.open(Media(q.url.toString()),play:false);
+          await _player.seek(pos); if(wasPlaying)await _player.play();
+        },itemBuilder:(c)=>_qualities.map((q)=>PopupMenuItem(value:q,child:Text('${q.videoQuality}'))).toList()),
+        IconButton(onPressed:()=>setState(()=>_fill=!_fill),icon:Icon(_fill?Icons.fit_screen:Icons.crop_free,color:Colors.white)),
+        IconButton(onPressed:_toggleFullscreen,icon:Icon(_fullscreen?Icons.fullscreen_exit:Icons.fullscreen,color:Colors.white)),
+      ]),
+      Align(alignment:Alignment.centerRight,child:Text('Brightness ${(_brightness*100).round()}%  •  Volume ${_volume.round()}%',style:const TextStyle(color:Colors.white70,fontSize:11))),
+    ]),
+  );
 }
