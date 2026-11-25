@@ -1,0 +1,22 @@
+name: tmkoc_noads
+description: Ad-free TMKOC streamer.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  youtube_explode_dart: ^2.3.10
+  media_kit: ^1.2.0
+  media_kit_video: ^1.2.0
+  media_kit_libs_video: ^1.0.0
+  http: ^1.2.0
+  cached_network_image: ^3.4.0
+  shared_preferences: ^2.5.3
+  screen_brightness: ^2.1.7
+
+flutter:
+  uses-material-design: true
