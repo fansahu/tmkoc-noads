@@ -39,19 +39,29 @@ jobs:
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
 
-      - name: Fix Android Plugin Java Targets
-        run: |
-          PUB_CACHE="$HOME/.pub-cache/hosted/pub.dev"
-
-          find "$PUB_CACHE" -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) -path "*/android/*" -exec sed -i -E 's/JavaVersion\.VERSION_(1_8|1_7|11)/JavaVersion.VERSION_17/g' {} +
-
-          echo "Android plugin Java targets patched to JVM 17"
-
-      - name: Set Kotlin JVM Target 17
+      - name: Align Android Java and Kotlin Targets
         run: |
           cat << 'EOF' >> android/build.gradle.kts
 
           subprojects {
+              plugins.withId("com.android.application") {
+                  extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
+                      compileOptions {
+                          sourceCompatibility = JavaVersion.VERSION_17
+                          targetCompatibility = JavaVersion.VERSION_17
+                      }
+                  }
+              }
+
+              plugins.withId("com.android.library") {
+                  extensions.configure<com.android.build.api.dsl.LibraryExtension> {
+                      compileOptions {
+                          sourceCompatibility = JavaVersion.VERSION_17
+                          targetCompatibility = JavaVersion.VERSION_17
+                      }
+                  }
+              }
+
               tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
                   compilerOptions {
                       jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -59,6 +69,13 @@ jobs:
               }
           }
           EOF
+
+      - name: Verify JVM Targets
+        run: |
+          echo "Java version:"
+          java -version
+          echo "Volume controller Gradle configuration:"
+          grep -R -n -E 'sourceCompatibility|targetCompatibility|jvmTarget' "$HOME/.pub-cache/hosted/pub.dev"/volume_controller-*/android 2>/dev/null || true
 
       - name: Build debug APK
         run: flutter build apk --debug --split-per-abi
