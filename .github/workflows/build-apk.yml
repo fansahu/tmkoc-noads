@@ -35,23 +35,12 @@ jobs:
 
       - name: Fix Android SDK and JVM Compatibility
         run: |
-          # 1. Set compileSdk to 36 and minSdk to 24 in app/build.gradle.kts
+          # Purani values ko nayi values se replace kar rahe hain (naya block add nahi kar rahe)
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
-          
-          # 2. Add compileOptions and kotlinOptions for Java/Kotlin 17 compatibility
-          cat << 'EOF' >> android/app/build.gradle.kts
-          
-          android {
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-          }
-          EOF
+          sed -i 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' android/app/build.gradle.kts
+          sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' android/app/build.gradle.kts
+          sed -i 's/jvmTarget = "11"/jvmTarget = "17"/g' android/app/build.gradle.kts
 
       - name: Build debug APK
         run: flutter build apk --debug --split-per-abi
