@@ -39,6 +39,25 @@ jobs:
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
 
+      - name: Set compileSdk for all Android plugins
+        run: |
+          cat <<'EOF' >> android/build.gradle.kts
+
+          subprojects {
+              plugins.withId("com.android.application") {
+                  extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
+                      compileSdk = 36
+                  }
+              }
+
+              plugins.withId("com.android.library") {
+                  extensions.configure<com.android.build.api.dsl.LibraryExtension> {
+                      compileSdk = 36
+                  }
+              }
+          }
+          EOF
+
       - name: Configure Kotlin JVM validation
         run: |
           touch android/gradle.properties
@@ -46,11 +65,14 @@ jobs:
             echo 'kotlin.jvm.target.validation.mode=warning' >> android/gradle.properties
           fi
 
-      - name: Verify Java
+      - name: Verify Android SDK configuration
         run: |
+          echo "Java version:"
           java -version
-          echo "Gradle properties:"
-          cat android/gradle.properties
+          echo "App compileSdk:"
+          grep -n 'compileSdk' android/app/build.gradle.kts
+          echo "Plugin compileSdk override:"
+          tail -n 20 android/build.gradle.kts
 
       - name: Build debug APK
         run: flutter build apk --debug --split-per-abi
@@ -60,4 +82,3 @@ jobs:
         with:
           name: ad-free-shows-apk
           path: build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
-          
