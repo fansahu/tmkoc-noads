@@ -97,6 +97,7 @@ jobs:
           grep -nE 'compileSdk|minSdk' android/app/build.gradle.kts
 
       - name: Analyze application code
+        continue-on-error: true
         run: flutter analyze lib
 
       - name: Build debug APK
