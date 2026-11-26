@@ -35,8 +35,11 @@ jobs:
       - name: Generate Android project
         run: flutter create --platforms=android .
 
-      - name: Restore project pubspec
+      - name: Restore original pubspec
         run: git checkout -- pubspec.yaml
+
+      - name: Remove generated default test
+        run: rm -rf test
 
       - name: Install Flutter dependencies
         run: flutter pub get
@@ -61,27 +64,24 @@ jobs:
 
           cat >> android/build.gradle.kts <<'EOF'
 
-          // Apply Android SDK configuration after each plugin project
-          // has finished configuring its Android extension.
           subprojects {
               afterEvaluate {
                   val androidExtension = extensions.findByName("android")
 
                   if (androidExtension != null) {
-                      val compileSdkSetter = androidExtension.javaClass.methods
-                          .firstOrNull {
-                              it.name == "setCompileSdk" &&
-                              it.parameterTypes.size == 1 &&
-                              it.parameterTypes[0] == Int::class.javaPrimitiveType
-                          }
+                      val setter = androidExtension.javaClass.methods.firstOrNull {
+                          it.name == "setCompileSdk" &&
+                          it.parameterTypes.size == 1 &&
+                          it.parameterTypes[0] == Int::class.javaPrimitiveType
+                      }
 
-                      compileSdkSetter?.invoke(androidExtension, 36)
+                      setter?.invoke(androidExtension, 36)
                   }
               }
           }
           EOF
 
-      - name: Configure Gradle JVM validation
+      - name: Configure Kotlin JVM validation
         run: |
           touch android/gradle.properties
 
@@ -89,20 +89,17 @@ jobs:
             echo 'kotlin.jvm.target.validation.mode=warning' >> android/gradle.properties
           fi
 
-      - name: Verify build environment
+      - name: Verify environment
         run: |
           java -version
           flutter --version
-          flutter doctor -v
-          echo "App Android configuration:"
+          echo "Android app configuration:"
           grep -nE 'compileSdk|minSdk' android/app/build.gradle.kts
-          echo "Plugin SDK override:"
-          tail -n 25 android/build.gradle.kts
 
-      - name: Analyze Flutter code
-        run: flutter analyze
+      - name: Analyze application code
+        run: flutter analyze lib
 
-      - name: Build APK
+      - name: Build debug APK
         run: flutter build apk --debug --split-per-abi
 
       - name: Upload APK
