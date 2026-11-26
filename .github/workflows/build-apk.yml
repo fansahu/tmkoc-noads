@@ -33,16 +33,25 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Fix Android MinSdk for FFmpeg
+      - name: Fix Android SDK and JVM Compatibility
         run: |
-          # Check if Kotlin DSL is used
-          if [ -f "android/app/build.gradle.kts" ]; then
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
-            sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/' android/app/build.gradle.kts
-          else
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' android/app/build.gradle
-            sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' android/app/build.gradle
-          fi
+          # 1. Set compileSdk to 36 and minSdk to 24 in app/build.gradle.kts
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
+          
+          # 2. Add compileOptions and kotlinOptions for Java/Kotlin 17 compatibility
+          cat << 'EOF' >> android/app/build.gradle.kts
+          
+          android {
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          EOF
 
       - name: Build debug APK
         run: flutter build apk --debug --split-per-abi
