@@ -14,7 +14,7 @@ class TmKocApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'TMKOC Ad Free',
+      title: 'Ad-Free Shows',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
