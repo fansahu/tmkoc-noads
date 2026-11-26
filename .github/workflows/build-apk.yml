@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -38,13 +38,13 @@ jobs:
       - name: Restore original pubspec
         run: git checkout -- pubspec.yaml
 
-      - name: Remove generated default test
+      - name: Remove generated test files
         run: rm -rf test
 
-      - name: Install Flutter dependencies
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Configure Android SDK
+      - name: Configure app Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +57,7 @@ jobs:
             's/minSdk = flutter.minSdkVersion/minSdk = 24/' \
             android/app/build.gradle.kts
 
-      - name: Configure compileSdk for Android plugins
+      - name: Configure Android plugin SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -65,23 +65,21 @@ jobs:
           cat >> android/build.gradle.kts <<'EOF'
 
           subprojects {
-              afterEvaluate {
-                  val androidExtension = extensions.findByName("android")
+              plugins.withId("com.android.application") {
+                  extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
+                      compileSdk = 36
+                  }
+              }
 
-                  if (androidExtension != null) {
-                      val setter = androidExtension.javaClass.methods.firstOrNull {
-                          it.name == "setCompileSdk" &&
-                          it.parameterTypes.size == 1 &&
-                          it.parameterTypes[0] == Int::class.javaPrimitiveType
-                      }
-
-                      setter?.invoke(androidExtension, 36)
+              plugins.withId("com.android.library") {
+                  extensions.configure<com.android.build.api.dsl.LibraryExtension> {
+                      compileSdk = 36
                   }
               }
           }
           EOF
 
-      - name: Configure Kotlin JVM validation
+      - name: Configure Kotlin validation
         run: |
           touch android/gradle.properties
 
@@ -89,12 +87,12 @@ jobs:
             echo 'kotlin.jvm.target.validation.mode=warning' >> android/gradle.properties
           fi
 
-      - name: Verify environment
+      - name: Verify configuration
         run: |
           java -version
           flutter --version
-          echo "Android app configuration:"
           grep -nE 'compileSdk|minSdk' android/app/build.gradle.kts
+          tail -n 20 android/build.gradle.kts
 
       - name: Analyze application code
         continue-on-error: true
@@ -110,4 +108,3 @@ jobs:
           path: build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
           if-no-files-found: error
           retention-days: 14
-          
