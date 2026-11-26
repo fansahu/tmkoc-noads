@@ -38,24 +38,18 @@ jobs:
           # App level par SDK update
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
-          
-          # Root build.gradle.kts mein sahi Kotlin syntax (=) ke saath block add kar rahe hain
+
+          # Root build.gradle.kts mein modern task-based config
           cat << 'EOF' >> android/build.gradle.kts
-          
+
           subprojects {
-              afterEvaluate {
-                  if (project.extensions.findByName("android") != null) {
-                      project.extensions.configure<com.android.build.gradle.BaseExtension>("android") {
-                          compileOptions {
-                              sourceCompatibility = JavaVersion.VERSION_17
-                              targetCompatibility = JavaVersion.VERSION_17
-                          }
-                      }
-                  }
-                  tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-                      kotlinOptions {
-                          jvmTarget = "17"
-                      }
+              tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
+                  sourceCompatibility = JavaVersion.VERSION_17.toString()
+                  targetCompatibility = JavaVersion.VERSION_17.toString()
+              }
+              tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+                  compilerOptions {
+                      jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
                   }
               }
           }
