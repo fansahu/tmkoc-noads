@@ -33,27 +33,26 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # NAYA FIX: Poore project ke liye Java aur Kotlin ka version 17 set karna
       - name: Fix Global JVM Target Compatibility
         run: |
           # App level par SDK update
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
           
-          # Root build.gradle.kts mein force kar rahe hain ki sabhi subprojects (plugins) Java 17 use karein
+          # Root build.gradle.kts mein sahi Kotlin syntax (=) ke saath block add kar rahe hain
           cat << 'EOF' >> android/build.gradle.kts
           
           subprojects {
               afterEvaluate {
-                  if (project.hasProperty("android")) {
-                      project.android {
+                  if (project.extensions.findByName("android") != null) {
+                      project.extensions.configure<com.android.build.gradle.BaseExtension>("android") {
                           compileOptions {
-                              sourceCompatibility JavaVersion.VERSION_17
-                              targetCompatibility JavaVersion.VERSION_17
+                              sourceCompatibility = JavaVersion.VERSION_17
+                              targetCompatibility = JavaVersion.VERSION_17
                           }
                       }
                   }
-                  tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+                  tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
                       kotlinOptions {
                           jvmTarget = "17"
                       }
